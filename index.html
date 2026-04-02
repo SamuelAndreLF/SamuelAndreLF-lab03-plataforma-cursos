@@ -57,6 +57,7 @@
                             <li><a class="dropdown-item" href="#" data-secao="planos">Planos</a></li>
                             <li><a class="dropdown-item" href="#" data-secao="assinaturas">Assinaturas</a></li>
                             <li><a class="dropdown-item" href="#" data-secao="pagamentos">Pagamentos</a></li>
+                            <li><a class="dropdown-item" href="#" data-secao="checkout">Checkout</a></li>
                         </ul>
                     </li>
                     <li class="nav-item">
@@ -165,6 +166,14 @@
                             </div>
                         </div>
                     </form>
+                </div>
+            </div>
+            <div class="row mb-3">
+                <div class="col-md-4">
+                    <label class="form-label">Filtrar por Categoria</label>
+                    <select class="form-select" id="filtro-categoria" onchange="renderCursos()">
+                        <option value="">Todas</option>
+                    </select>
                 </div>
             </div>
             <div class="table-responsive">
@@ -785,6 +794,45 @@
             </div>
 
             <div id="certificado-visual" class="mt-4"></div>
+        </div>
+
+        <div class="secao" id="secao-checkout">
+            <h2>Checkout</h2>
+            <div class="card mb-4">
+                <div class="card-body">
+                    <form id="form-checkout" onsubmit="return false">
+                        <div class="row">
+                            <div class="col-md-3 mb-3">
+                                <label for="checkout-usuario" class="form-label">Usuário</label>
+                                <select class="form-select" id="checkout-usuario" required>
+                                    <option value="">Selecione...</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <label for="checkout-plano" class="form-label">Plano</label>
+                                <select class="form-select" id="checkout-plano" required>
+                                    <option value="">Selecione...</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <label for="checkout-metodo" class="form-label">Método de Pagamento</label>
+                                <select class="form-select" id="checkout-metodo" required>
+                                    <option value="">Selecione...</option>
+                                    <option value="Cartão Crédito">Cartão Crédito</option>
+                                    <option value="Cartão Débito">Cartão Débito</option>
+                                    <option value="Boleto">Boleto</option>
+                                    <option value="PIX">PIX</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <label class="form-label">&nbsp;</label>
+                                <button type="submit" class="btn btn-success w-100">Finalizar</button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            <div id="checkout-resumo"></div>
         </div>
 
     </main>

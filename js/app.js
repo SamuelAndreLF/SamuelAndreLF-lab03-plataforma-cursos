@@ -83,6 +83,10 @@ function atualizarSelects() {
             selPag.appendChild(opt);
         });
     }
+
+    populaSelect('filtro-categoria', dados.categorias, 'id', 'nome');
+    populaSelect('checkout-usuario', dados.usuarios, 'id', 'nomeCompleto');
+    populaSelect('checkout-plano', dados.planos, 'id', 'nome');
 }
 
 function setupForms() {
@@ -412,6 +416,49 @@ function setupForms() {
         renderCertificados();
         mostrarCertificado(cert);
     });
+
+    document.getElementById('form-checkout').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const idUsuario = document.getElementById('checkout-usuario').value;
+        const idPlano = document.getElementById('checkout-plano').value;
+        const metodo = document.getElementById('checkout-metodo').value;
+
+        if (!idUsuario || !idPlano || !metodo) { alert('Preencha todos os campos!'); return; }
+
+        const plano = dados.planos.find(p => p.id == idPlano);
+        if (!plano) { alert('Plano não encontrado!'); return; }
+
+        const hoje = new Date();
+        const fim = new Date(hoje);
+        fim.setMonth(fim.getMonth() + plano.duracaoMeses);
+        const dataInicio = hoje.toISOString().split('T')[0];
+        const dataFim = fim.toISOString().split('T')[0];
+
+        contadores.assinatura++;
+        const assinatura = new Assinatura(contadores.assinatura, parseInt(idUsuario), parseInt(idPlano), dataInicio, dataFim);
+        dados.assinaturas.push(assinatura);
+
+        contadores.pagamento++;
+        const pagamento = new Pagamento(contadores.pagamento, assinatura.id, plano.preco, metodo);
+        dados.pagamentos.push(pagamento);
+
+        const usuario = dados.usuarios.find(u => u.id == idUsuario);
+        document.getElementById('checkout-resumo').innerHTML = `
+            <div class="alert alert-success mt-3">
+                <h5>Assinatura realizada com sucesso!</h5>
+                <p><strong>Usuário:</strong> ${usuario ? usuario.nomeCompleto : ''}</p>
+                <p><strong>Plano:</strong> ${plano.nome} - R$ ${plano.preco.toFixed(2)}</p>
+                <p><strong>Período:</strong> ${formatarData(dataInicio)} até ${formatarData(dataFim)}</p>
+                <p><strong>Pagamento:</strong> ${metodo}</p>
+                <p><strong>Transação:</strong> ${pagamento.idTransacaoGateway}</p>
+            </div>
+        `;
+
+        this.reset();
+        renderAssinaturas();
+        renderPagamentos();
+        atualizarSelects();
+    });
 }
 
 
@@ -435,8 +482,10 @@ function renderCategorias() {
 
 function renderCursos() {
     const tbody = document.getElementById('tbody-cursos');
+    const filtro = document.getElementById('filtro-categoria').value;
     tbody.innerHTML = '';
-    dados.cursos.forEach(c => {
+    const lista = filtro ? dados.cursos.filter(c => c.idCategoria == filtro) : dados.cursos;
+    lista.forEach(c => {
         const categoriaNome = buscarNome(dados.categorias, c.idCategoria, 'nome');
         const instrutorNome = buscarNome(dados.usuarios, c.idInstrutor, 'nomeCompleto');
         tbody.innerHTML += `
