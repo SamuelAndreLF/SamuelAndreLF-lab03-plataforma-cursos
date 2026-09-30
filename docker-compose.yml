@@ -1,0 +1,16 @@
+services:
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      JWT_SECRET: ${JWT_SECRET:-segredo-de-desenvolvimento-troque-em-producao}
+      JWT_EXPIRES: 8h
+      DB_FILE: /app/dados/cursos.db
+    volumes:
+      - dados:/app/dados
+    restart: unless-stopped
+
+volumes:
+  dados:

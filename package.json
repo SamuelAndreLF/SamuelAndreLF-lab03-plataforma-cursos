@@ -1,0 +1,24 @@
+{
+  "name": "plataforma-cursos",
+  "version": "1.0.0",
+  "description": "Plataforma de cursos online: API REST com Express, SQLite, login JWT com papéis (admin e aluno) e documentação Swagger",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node scripts/seed.js",
+    "banco": "node scripts/show-db.js",
+    "test": "node --test tests/",
+    "cert": "mkdir -p certs && openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 365 -subj \"/CN=localhost\""
+  },
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^13.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.4",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "swagger-ui-express": "^5.0.1"
+  }
+}
