@@ -13,6 +13,7 @@ const authRoutes = require('./routes/auth');
 const catalogoRoutes = require('./routes/catalogo');
 const aprendizadoRoutes = require('./routes/aprendizado');
 const assinaturaRoutes = require('./routes/assinaturas');
+const bancoRoutes = require('./routes/banco');
 
 const app = express();
 
@@ -32,6 +33,7 @@ app.use('/auth', authRoutes);
 app.use('/', catalogoRoutes);
 app.use('/', aprendizadoRoutes);
 app.use('/', assinaturaRoutes);
+app.use('/', bancoRoutes);
 
 // O LAB03 original continua servido como estava, na raiz.
 app.use(express.static(path.join(__dirname, '..')));

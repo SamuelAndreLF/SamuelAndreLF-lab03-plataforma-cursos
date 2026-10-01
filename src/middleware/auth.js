@@ -6,7 +6,7 @@
 // token expirar.
 
 const jwt = require('jsonwebtoken');
-const db = require('../db');
+const { um } = require('../db');
 
 const SEGREDO = process.env.JWT_SECRET || 'troque-este-segredo-no-env';
 const VALIDADE = process.env.JWT_EXPIRES || '8h';
@@ -38,8 +38,8 @@ function exigirLogin(req, res, next) {
 }
 
 // Exige que o usuário logado seja admin. Usar sempre DEPOIS de exigirLogin.
-function exigirAdmin(req, res, next) {
-  const atual = db.prepare('SELECT papel FROM usuarios WHERE id = ?').get(req.usuario.id);
+async function exigirAdmin(req, res, next) {
+  const atual = await um('SELECT papel FROM usuarios WHERE id = ?', [req.usuario.id]);
 
   if (!atual) {
     return res.status(401).json({ error: 'Usuário do token não existe mais' });

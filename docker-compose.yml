@@ -1,4 +1,28 @@
+# Dois contêineres: o MySQL e a API.
+#
+# O `depends_on` com `condition: service_healthy` é o que evita o erro mais
+# comum aqui — a API subir antes de o banco aceitar conexão. Ela espera o
+# healthcheck do MySQL passar.
+
 services:
+  banco:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: plataforma_cursos
+      MYSQL_USER: cursos
+      MYSQL_PASSWORD: cursos
+    ports:
+      - "3306:3306"
+    volumes:
+      - dados:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ucursos", "-pcursos"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   api:
     build: .
     ports:
@@ -7,9 +31,14 @@ services:
       PORT: 3000
       JWT_SECRET: ${JWT_SECRET:-segredo-de-desenvolvimento-troque-em-producao}
       JWT_EXPIRES: 8h
-      DB_FILE: /app/dados/cursos.db
-    volumes:
-      - dados:/app/dados
+      DB_HOST: banco
+      DB_PORT: 3306
+      DB_USER: cursos
+      DB_PASSWORD: cursos
+      DB_NAME: plataforma_cursos
+    depends_on:
+      banco:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

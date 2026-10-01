@@ -1,141 +1,230 @@
-// Banco SQLite em arquivo único.
+// Banco MySQL.
 //
 // O LAB03 guardava tudo em memória: as classes de js/classes.js viviam num
 // objeto `dados` que sumia ao recarregar a página. O esquema abaixo é a mesma
 // modelagem, agora em tabelas — por isso os nomes das colunas seguem os nomes
 // dos atributos das classes originais, em snake_case.
 //
-// As chaves estrangeiras ficam LIGADAS de propósito. O SQLite as ignora por
-// padrão, e sem isso daria para matricular um aluno num curso inexistente —
-// justamente o tipo de inconsistência que a versão em localStorage permitia.
+// A conexão é um POOL, não uma conexão só. Com uma conexão única, dois
+// pedidos simultâneos ficariam em fila; e se ela caísse, a aplicação inteira
+// perderia o banco até reiniciar. O pool abre várias e repõe o que cair.
 
-const path = require('node:path');
-const Database = require('better-sqlite3');
+const mysql = require('mysql2/promise');
 
-const arquivo = process.env.DB_FILE || path.join(__dirname, '..', 'cursos.db');
-const db = new Database(arquivo);
+const pool = mysql.createPool({
+  host: process.env.DB_HOST || 'localhost',
+  port: Number(process.env.DB_PORT) || 3306,
+  user: process.env.DB_USER || 'cursos',
+  password: process.env.DB_PASSWORD || 'cursos',
+  database: process.env.DB_NAME || 'plataforma_cursos',
+  waitForConnections: true,
+  connectionLimit: 10,
+  // Sem isso o driver devolve DECIMAL como texto, e preço viraria "49.90"
+  // em vez de 49.9 no JSON.
+  decimalNumbers: true,
+  dateStrings: true,
+});
 
-db.pragma('foreign_keys = ON');
+// Consulta que devolve várias linhas.
+async function todos(sql, params = []) {
+  const [linhas] = await pool.query(sql, params);
+  return linhas;
+}
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS usuarios (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    nome_completo TEXT    NOT NULL,
-    email         TEXT    NOT NULL UNIQUE,
-    senha_hash    TEXT    NOT NULL,
-    papel         TEXT    NOT NULL DEFAULT 'aluno' CHECK (papel IN ('admin', 'aluno')),
-    data_cadastro TEXT    NOT NULL DEFAULT (date('now'))
-  );
+// Consulta que devolve uma linha só (ou undefined).
+async function um(sql, params = []) {
+  const linhas = await todos(sql, params);
+  return linhas[0];
+}
 
-  CREATE TABLE IF NOT EXISTS categorias (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    nome      TEXT    NOT NULL UNIQUE,
-    descricao TEXT
-  );
+// INSERT, UPDATE e DELETE. Devolve insertId e affectedRows.
+async function executar(sql, params = []) {
+  const [resultado] = await pool.query(sql, params);
+  return resultado;
+}
 
-  CREATE TABLE IF NOT EXISTS cursos (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    titulo           TEXT    NOT NULL,
-    descricao        TEXT,
-    id_instrutor     INTEGER NOT NULL REFERENCES usuarios(id),
-    id_categoria     INTEGER NOT NULL REFERENCES categorias(id),
-    nivel            TEXT    NOT NULL CHECK (nivel IN ('Iniciante', 'Intermediário', 'Avançado')),
-    data_publicacao  TEXT    NOT NULL DEFAULT (date('now')),
-    total_aulas      INTEGER NOT NULL DEFAULT 0,
-    total_horas      REAL    NOT NULL DEFAULT 0
-  );
+// Roda várias operações como uma transação só: ou todas valem, ou nenhuma.
+// A conexão precisa ser a MESMA do começo ao fim, por isso ela é tomada do
+// pool e devolvida no final — usar o pool direto aqui abriria conexões
+// diferentes e o COMMIT não cobriria o que foi feito nas outras.
+async function transacao(trabalho) {
+  const conexao = await pool.getConnection();
+  try {
+    await conexao.beginTransaction();
+    const resultado = await trabalho(conexao);
+    await conexao.commit();
+    return resultado;
+  } catch (erro) {
+    await conexao.rollback();
+    throw erro;
+  } finally {
+    conexao.release();
+  }
+}
 
-  CREATE TABLE IF NOT EXISTS modulos (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    id_curso INTEGER NOT NULL REFERENCES cursos(id) ON DELETE CASCADE,
-    titulo   TEXT    NOT NULL,
-    ordem    INTEGER NOT NULL DEFAULT 1
-  );
+// Cria as tabelas se ainda não existirem.
+//
+// A ordem importa: uma tabela que aponta para outra precisa que a outra já
+// exista. Por isso usuarios e categorias vêm antes de cursos, e cursos antes
+// de modulos.
+async function criarEsquema() {
+  const comandos = [
+    `CREATE TABLE IF NOT EXISTS usuarios (
+      id            INT AUTO_INCREMENT PRIMARY KEY,
+      nome_completo VARCHAR(150) NOT NULL,
+      email         VARCHAR(150) NOT NULL UNIQUE,
+      senha_hash    VARCHAR(255) NOT NULL,
+      papel         ENUM('admin','aluno') NOT NULL DEFAULT 'aluno',
+      data_cadastro DATE NOT NULL DEFAULT (CURRENT_DATE)
+    )`,
 
-  CREATE TABLE IF NOT EXISTS aulas (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    id_modulo        INTEGER NOT NULL REFERENCES modulos(id) ON DELETE CASCADE,
-    titulo           TEXT    NOT NULL,
-    tipo_conteudo    TEXT    NOT NULL CHECK (tipo_conteudo IN ('Vídeo', 'Texto', 'Quiz')),
-    url_conteudo     TEXT,
-    duracao_minutos  INTEGER NOT NULL DEFAULT 0,
-    ordem            INTEGER NOT NULL DEFAULT 1
-  );
+    `CREATE TABLE IF NOT EXISTS categorias (
+      id        INT AUTO_INCREMENT PRIMARY KEY,
+      nome      VARCHAR(100) NOT NULL UNIQUE,
+      descricao TEXT
+    )`,
 
-  CREATE TABLE IF NOT EXISTS matriculas (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    id_usuario      INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
-    id_curso        INTEGER NOT NULL REFERENCES cursos(id) ON DELETE CASCADE,
-    data_matricula  TEXT    NOT NULL DEFAULT (date('now')),
-    data_conclusao  TEXT,
-    UNIQUE (id_usuario, id_curso)
-  );
+    `CREATE TABLE IF NOT EXISTS cursos (
+      id              INT AUTO_INCREMENT PRIMARY KEY,
+      titulo          VARCHAR(150) NOT NULL,
+      descricao       TEXT,
+      id_instrutor    INT NOT NULL,
+      id_categoria    INT NOT NULL,
+      nivel           ENUM('Iniciante','Intermediário','Avançado') NOT NULL,
+      data_publicacao DATE NOT NULL DEFAULT (CURRENT_DATE),
+      total_aulas     INT NOT NULL DEFAULT 0,
+      total_horas     DECIMAL(6,2) NOT NULL DEFAULT 0,
+      FOREIGN KEY (id_instrutor) REFERENCES usuarios(id),
+      FOREIGN KEY (id_categoria) REFERENCES categorias(id)
+    )`,
 
-  CREATE TABLE IF NOT EXISTS progresso_aulas (
-    id_usuario      INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
-    id_aula         INTEGER NOT NULL REFERENCES aulas(id) ON DELETE CASCADE,
-    status          TEXT    NOT NULL CHECK (status IN ('Não iniciado', 'Em andamento', 'Concluído')),
-    data_conclusao  TEXT,
-    PRIMARY KEY (id_usuario, id_aula)
-  );
+    `CREATE TABLE IF NOT EXISTS modulos (
+      id       INT AUTO_INCREMENT PRIMARY KEY,
+      id_curso INT NOT NULL,
+      titulo   VARCHAR(150) NOT NULL,
+      ordem    INT NOT NULL DEFAULT 1,
+      FOREIGN KEY (id_curso) REFERENCES cursos(id) ON DELETE CASCADE
+    )`,
 
-  CREATE TABLE IF NOT EXISTS avaliacoes (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    id_usuario      INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
-    id_curso        INTEGER NOT NULL REFERENCES cursos(id) ON DELETE CASCADE,
-    nota            REAL    NOT NULL CHECK (nota >= 0 AND nota <= 5),
-    comentario      TEXT,
-    data_avaliacao  TEXT    NOT NULL DEFAULT (date('now')),
-    UNIQUE (id_usuario, id_curso)
-  );
+    `CREATE TABLE IF NOT EXISTS aulas (
+      id              INT AUTO_INCREMENT PRIMARY KEY,
+      id_modulo       INT NOT NULL,
+      titulo          VARCHAR(150) NOT NULL,
+      tipo_conteudo   ENUM('Vídeo','Texto','Quiz') NOT NULL,
+      url_conteudo    VARCHAR(255),
+      duracao_minutos INT NOT NULL DEFAULT 0,
+      ordem           INT NOT NULL DEFAULT 1,
+      FOREIGN KEY (id_modulo) REFERENCES modulos(id) ON DELETE CASCADE
+    )`,
 
-  CREATE TABLE IF NOT EXISTS trilhas (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    titulo       TEXT    NOT NULL,
-    descricao    TEXT,
-    id_categoria INTEGER NOT NULL REFERENCES categorias(id)
-  );
+    `CREATE TABLE IF NOT EXISTS matriculas (
+      id             INT AUTO_INCREMENT PRIMARY KEY,
+      id_usuario     INT NOT NULL,
+      id_curso       INT NOT NULL,
+      data_matricula DATE NOT NULL DEFAULT (CURRENT_DATE),
+      data_conclusao DATE NULL,
+      UNIQUE KEY uq_matricula (id_usuario, id_curso),
+      FOREIGN KEY (id_usuario) REFERENCES usuarios(id) ON DELETE CASCADE,
+      FOREIGN KEY (id_curso)   REFERENCES cursos(id)   ON DELETE CASCADE
+    )`,
 
-  CREATE TABLE IF NOT EXISTS trilhas_cursos (
-    id_trilha INTEGER NOT NULL REFERENCES trilhas(id) ON DELETE CASCADE,
-    id_curso  INTEGER NOT NULL REFERENCES cursos(id)  ON DELETE CASCADE,
-    ordem     INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY (id_trilha, id_curso)
-  );
+    `CREATE TABLE IF NOT EXISTS progresso_aulas (
+      id_usuario     INT NOT NULL,
+      id_aula        INT NOT NULL,
+      status         ENUM('Não iniciado','Em andamento','Concluído') NOT NULL,
+      data_conclusao DATE NULL,
+      PRIMARY KEY (id_usuario, id_aula),
+      FOREIGN KEY (id_usuario) REFERENCES usuarios(id) ON DELETE CASCADE,
+      FOREIGN KEY (id_aula)    REFERENCES aulas(id)    ON DELETE CASCADE
+    )`,
 
-  CREATE TABLE IF NOT EXISTS planos (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    nome           TEXT    NOT NULL UNIQUE,
-    descricao      TEXT,
-    preco          REAL    NOT NULL CHECK (preco >= 0),
-    duracao_meses  INTEGER NOT NULL CHECK (duracao_meses > 0)
-  );
+    `CREATE TABLE IF NOT EXISTS avaliacoes (
+      id             INT AUTO_INCREMENT PRIMARY KEY,
+      id_usuario     INT NOT NULL,
+      id_curso       INT NOT NULL,
+      nota           DECIMAL(2,1) NOT NULL CHECK (nota >= 0 AND nota <= 5),
+      comentario     TEXT,
+      data_avaliacao DATE NOT NULL DEFAULT (CURRENT_DATE),
+      UNIQUE KEY uq_avaliacao (id_usuario, id_curso),
+      FOREIGN KEY (id_usuario) REFERENCES usuarios(id) ON DELETE CASCADE,
+      FOREIGN KEY (id_curso)   REFERENCES cursos(id)   ON DELETE CASCADE
+    )`,
 
-  CREATE TABLE IF NOT EXISTS assinaturas (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    id_usuario  INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
-    id_plano    INTEGER NOT NULL REFERENCES planos(id),
-    data_inicio TEXT    NOT NULL,
-    data_fim    TEXT    NOT NULL
-  );
+    `CREATE TABLE IF NOT EXISTS trilhas (
+      id           INT AUTO_INCREMENT PRIMARY KEY,
+      titulo       VARCHAR(150) NOT NULL,
+      descricao    TEXT,
+      id_categoria INT NOT NULL,
+      FOREIGN KEY (id_categoria) REFERENCES categorias(id)
+    )`,
 
-  CREATE TABLE IF NOT EXISTS pagamentos (
-    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
-    id_assinatura          INTEGER NOT NULL REFERENCES assinaturas(id) ON DELETE CASCADE,
-    valor_pago             REAL    NOT NULL CHECK (valor_pago >= 0),
-    data_pagamento         TEXT    NOT NULL DEFAULT (date('now')),
-    metodo_pagamento       TEXT    NOT NULL,
-    id_transacao_gateway   TEXT    NOT NULL
-  );
+    `CREATE TABLE IF NOT EXISTS trilhas_cursos (
+      id_trilha INT NOT NULL,
+      id_curso  INT NOT NULL,
+      ordem     INT NOT NULL DEFAULT 1,
+      PRIMARY KEY (id_trilha, id_curso),
+      FOREIGN KEY (id_trilha) REFERENCES trilhas(id) ON DELETE CASCADE,
+      FOREIGN KEY (id_curso)  REFERENCES cursos(id)  ON DELETE CASCADE
+    )`,
 
-  CREATE TABLE IF NOT EXISTS certificados (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    id_usuario           INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
-    id_curso             INTEGER NOT NULL REFERENCES cursos(id)  ON DELETE CASCADE,
-    id_trilha            INTEGER          REFERENCES trilhas(id),
-    codigo_verificacao   TEXT    NOT NULL UNIQUE,
-    data_emissao         TEXT    NOT NULL DEFAULT (date('now'))
-  );
-`);
+    `CREATE TABLE IF NOT EXISTS planos (
+      id            INT AUTO_INCREMENT PRIMARY KEY,
+      nome          VARCHAR(100) NOT NULL UNIQUE,
+      descricao     TEXT,
+      preco         DECIMAL(10,2) NOT NULL CHECK (preco >= 0),
+      duracao_meses INT NOT NULL CHECK (duracao_meses > 0)
+    )`,
 
-module.exports = db;
+    `CREATE TABLE IF NOT EXISTS assinaturas (
+      id          INT AUTO_INCREMENT PRIMARY KEY,
+      id_usuario  INT NOT NULL,
+      id_plano    INT NOT NULL,
+      data_inicio DATE NOT NULL,
+      data_fim    DATE NOT NULL,
+      FOREIGN KEY (id_usuario) REFERENCES usuarios(id) ON DELETE CASCADE,
+      FOREIGN KEY (id_plano)   REFERENCES planos(id)
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS pagamentos (
+      id                   INT AUTO_INCREMENT PRIMARY KEY,
+      id_assinatura        INT NOT NULL,
+      valor_pago           DECIMAL(10,2) NOT NULL CHECK (valor_pago >= 0),
+      data_pagamento       DATE NOT NULL DEFAULT (CURRENT_DATE),
+      metodo_pagamento     VARCHAR(60) NOT NULL,
+      id_transacao_gateway VARCHAR(40) NOT NULL,
+      FOREIGN KEY (id_assinatura) REFERENCES assinaturas(id) ON DELETE CASCADE
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS certificados (
+      id                 INT AUTO_INCREMENT PRIMARY KEY,
+      id_usuario         INT NOT NULL,
+      id_curso           INT NOT NULL,
+      id_trilha          INT NULL,
+      codigo_verificacao VARCHAR(20) NOT NULL UNIQUE,
+      data_emissao       DATE NOT NULL DEFAULT (CURRENT_DATE),
+      FOREIGN KEY (id_usuario) REFERENCES usuarios(id) ON DELETE CASCADE,
+      FOREIGN KEY (id_curso)   REFERENCES cursos(id)   ON DELETE CASCADE,
+      FOREIGN KEY (id_trilha)  REFERENCES trilhas(id)
+    )`,
+  ];
+
+  for (const comando of comandos) await pool.query(comando);
+}
+
+// O MySQL num contêiner demora alguns segundos a aceitar conexão depois que
+// o Docker diz que o contêiner subiu. Sem esta espera, a API morreria na
+// primeira tentativa e seria preciso reiniciar à mão.
+async function esperarBanco(tentativas = 30) {
+  for (let i = 1; i <= tentativas; i += 1) {
+    try {
+      await pool.query('SELECT 1');
+      return;
+    } catch (erro) {
+      if (i === tentativas) throw erro;
+      console.log(`  aguardando o MySQL... (${i}/${tentativas})`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+}
+
+module.exports = { pool, todos, um, executar, transacao, criarEsquema, esperarBanco };

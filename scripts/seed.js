@@ -1,68 +1,81 @@
 // Popula o banco com dados de exemplo, para a apresentação não começar vazia.
 //
-// É idempotente: se já existir admin, não faz nada. Rodar duas vezes por
+// É idempotente: se já existir usuário, não faz nada. Rodar duas vezes por
 // engano no meio da demo não duplica curso nem cria cobrança repetida.
 
 require('dotenv').config();
 
 const bcrypt = require('bcryptjs');
-const db = require('../src/db');
+const { pool, um, executar, esperarBanco, criarEsquema } = require('../src/db');
 
-const jaTem = db.prepare("SELECT COUNT(*) AS n FROM usuarios").get().n > 0;
-if (jaTem) {
-  console.log('Banco já tem usuários; nada a fazer. Apague cursos.db para recomeçar do zero.');
-  process.exit(0);
-}
+async function semear() {
+  await esperarBanco();
+  await criarEsquema();
 
-const semear = db.transaction(() => {
+  const { n } = await um('SELECT COUNT(*) AS n FROM usuarios');
+  if (n > 0) {
+    console.log('Banco já tem usuários; nada a fazer.');
+    console.log('Para recomeçar do zero: docker compose down -v && docker compose up -d banco');
+    return;
+  }
+
   const senha = bcrypt.hashSync('senha123', 10);
 
-  const admin = db.prepare(
+  const admin = (await executar(
     "INSERT INTO usuarios (nome_completo, email, senha_hash, papel) VALUES (?, ?, ?, 'admin')",
-  ).run('Samuel André', 'admin@puc.br', senha).lastInsertRowid;
+    ['Samuel André', 'admin@puc.br', senha],
+  )).insertId;
 
-  db.prepare(
+  await executar(
     "INSERT INTO usuarios (nome_completo, email, senha_hash, papel) VALUES (?, ?, ?, 'aluno')",
-  ).run('Maria Aluna', 'aluno@puc.br', senha);
+    ['Maria Aluna', 'aluno@puc.br', senha],
+  );
 
-  const prog = db.prepare('INSERT INTO categorias (nome, descricao) VALUES (?, ?)')
-    .run('Programação', 'Cursos de desenvolvimento de software').lastInsertRowid;
-  db.prepare('INSERT INTO categorias (nome, descricao) VALUES (?, ?)')
-    .run('Dados', 'Análise e ciência de dados');
+  const prog = (await executar('INSERT INTO categorias (nome, descricao) VALUES (?, ?)',
+    ['Programação', 'Cursos de desenvolvimento de software'])).insertId;
+  await executar('INSERT INTO categorias (nome, descricao) VALUES (?, ?)',
+    ['Dados', 'Análise e ciência de dados']);
 
-  const curso = db.prepare(`
-    INSERT INTO cursos (titulo, descricao, id_instrutor, id_categoria, nivel)
-    VALUES (?, ?, ?, ?, 'Iniciante')
-  `).run('JavaScript do zero', 'Lógica, DOM e consumo de API', admin, prog).lastInsertRowid;
+  const curso = (await executar(
+    `INSERT INTO cursos (titulo, descricao, id_instrutor, id_categoria, nivel)
+     VALUES (?, ?, ?, ?, 'Iniciante')`,
+    ['JavaScript do zero', 'Lógica, DOM e consumo de API', admin, prog],
+  )).insertId;
 
-  const modulo = db.prepare('INSERT INTO modulos (id_curso, titulo, ordem) VALUES (?, ?, 1)')
-    .run(curso, 'Fundamentos').lastInsertRowid;
+  const modulo = (await executar('INSERT INTO modulos (id_curso, titulo, ordem) VALUES (?, ?, 1)',
+    [curso, 'Fundamentos'])).insertId;
 
   const aulas = [
     ['Variáveis e tipos', 'Vídeo', 18],
     ['Condicionais', 'Vídeo', 22],
     ['Quiz do módulo', 'Quiz', 10],
   ];
-  aulas.forEach(([titulo, tipo, minutos], i) => {
-    db.prepare(`
-      INSERT INTO aulas (id_modulo, titulo, tipo_conteudo, duracao_minutos, ordem)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(modulo, titulo, tipo, minutos, i + 1);
-  });
+  for (let i = 0; i < aulas.length; i += 1) {
+    const [titulo, tipo, minutos] = aulas[i];
+    await executar(
+      `INSERT INTO aulas (id_modulo, titulo, tipo_conteudo, duracao_minutos, ordem)
+       VALUES (?, ?, ?, ?, ?)`,
+      [modulo, titulo, tipo, minutos, i + 1],
+    );
+  }
 
   // Mesma conta que o servidor faz ao criar aula pela API.
-  db.prepare(`
-    UPDATE cursos SET total_aulas = ?, total_horas = ? WHERE id = ?
-  `).run(aulas.length, aulas.reduce((s, a) => s + a[2], 0) / 60, curso);
+  await executar('UPDATE cursos SET total_aulas = ?, total_horas = ? WHERE id = ?',
+    [aulas.length, aulas.reduce((s, a) => s + a[2], 0) / 60, curso]);
 
-  db.prepare('INSERT INTO planos (nome, descricao, preco, duracao_meses) VALUES (?, ?, ?, ?)')
-    .run('Mensal', 'Acesso a todos os cursos por 1 mês', 49.9, 1);
-  db.prepare('INSERT INTO planos (nome, descricao, preco, duracao_meses) VALUES (?, ?, ?, ?)')
-    .run('Anual', 'Acesso a todos os cursos por 12 meses', 399.0, 12);
-});
+  await executar('INSERT INTO planos (nome, descricao, preco, duracao_meses) VALUES (?, ?, ?, ?)',
+    ['Mensal', 'Acesso a todos os cursos por 1 mês', 49.9, 1]);
+  await executar('INSERT INTO planos (nome, descricao, preco, duracao_meses) VALUES (?, ?, ?, ?)',
+    ['Anual', 'Acesso a todos os cursos por 12 meses', 399.0, 12]);
 
-semear();
+  console.log('Banco populado.');
+  console.log('  admin@puc.br / senha123   (administrador)');
+  console.log('  aluno@puc.br / senha123   (aluno)');
+}
 
-console.log('Banco populado.');
-console.log('  admin@puc.br / senha123   (administrador)');
-console.log('  aluno@puc.br / senha123   (aluno)');
+semear()
+  .catch((erro) => {
+    console.error('Falhou:', erro.message);
+    process.exitCode = 1;
+  })
+  .finally(() => pool.end());
